@@ -1,74 +1,73 @@
-from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
-from pufferlib.ocean.tetris import tetris
+from pufferlib import pufferl
 import os
-import argparse
+import torch
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='RL tetris')
-    
-    parser.add_argument(
-        '--timesteps', 
-        type=int, 
-        default=500_000,
-        help='timesteps | default: 500000'
-    )
-
-    return parser.parse_args()
 
 def main():
-    args = parse_args()
+    env_name = "puffer_tetris"
+    config = pufferl.load_config(env_name)
+    
+    # Hardcoded configuration
+    config["train"]["device"] = "mps"
+    config["train"]["total_timesteps"] = 10000
+    config["train"]["use_rnn"] = False
+    config["train"]["learning_rate"] = 3e-4
+    config["train"]["checkpoint_interval"] = 50
+    config["env"]["num_envs"] = 8
+
+    config["train"]["optimizer"] = "adam"
+
+    config["train"]["minibatch_size"] = 512
+    config["train"]["max_minibatch_size"] = 2048 
+
+    vecenv = pufferl.load_env(env_name, config)
+    policy = pufferl.load_policy(config, vecenv)
+    
+    train_config = dict(**config["train"], env=env_name)
+    train_config["batch_size"] = 8192
+
+    trainer = pufferl.PuffeRL(train_config, vecenv, policy)
+    
+    # Debug: check training will actually run
+    print(f"Current epoch: {trainer.epoch}")
+    print(f"Total epochs: {trainer.total_epochs}")
+    print(f"Will train: {trainer.epoch < trainer.total_epochs}")
+    print("\n====================\nbegin\n") 
+
+    if trainer.total_epochs == 0:
+        print("ERROR: total_epochs is 0")
+        return
+    
+    print("training ...\n")
+    epoch = 0
+    try:
+        while trainer.epoch < trainer.total_epochs:
+            """
+            SKIP EVALUATION/ conflict with use_rnn=False
+
+            if epoch % 10 == 0:
+                trainer.evaluate()
+            """
+
+            logs = trainer.train()
+
+            if logs and epoch % 5 == 0:
+                reward = logs.get('reward', logs.get('mean_reward', 0))
+                print(f"Epoch {trainer.epoch}/{trainer.total_epochs} | Reward: {reward:.2f}")
+            epoch += 1
+            
+    except KeyboardInterrupt:
+        print("\n====================\ninterrupted")
+    
+    print(f"\nTraining completed. Final epoch: {trainer.epoch}")
+
     os.makedirs("models/mlp", exist_ok=True)
-
-    env = tetris.Tetris()
-    eval_env = tetris.Tetris()
-
-    print(f"Observation space: {env.observation_space}")
-    print(f"Action space: {env.action_space}")
-    print(f"Number of actions: {env.action_space.n}")
-    print(f"number of timesteps: {args.timesteps}")
-
-    checkpoint_callback = CheckpointCallback(
-        save_freq=10000,
-        save_path="models/mlp/checkpoints/",
-        name_prefix="tetris_mlp"
-    )
-
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path="models/mlp/",
-        log_path="models/mlp/logs/",
-        eval_freq=5000,
-        deterministic=True,
-        render=False,
-        n_eval_episodes=10
-    )
-
-    model = PPO(
-        'MlpPolicy',
-        env,
-        device="mps",
-        verbose=1,
-        n_steps=2048,
-        batch_size=64,
-        learning_rate=3e-4,
-        gamma=0.99,
-        gae_lambda=0.95,
-        ent_coef=0.01,
-        tensorboard_log="./tensorboard_logs/mlp/"
-    )
-
-    model.learn(
-        total_timesteps=args.timesteps,
-        callback=[checkpoint_callback, eval_callback],
-        progress_bar=True
-    )
-
-    model.save("models/mlp/final_model")
-    print("Model saved to models/mlp/final_model")
-
-    env.close()
-    eval_env.close()
-
+    save_path = "models/mlp/final_model"
+    torch.save(policy.state_dict(), save_path)
+    print(f"\nModel saved to {save_path}")
+    
+    trainer.print_dashboard()
+    trainer.close()
+    
 if __name__ == "__main__":
     main()

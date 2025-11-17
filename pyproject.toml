@@ -5,6 +5,6 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+    "gym==0.23",
     "pufferlib>=3.0.0",
-    "stable-baselines3>=2.7.0",
 ]
