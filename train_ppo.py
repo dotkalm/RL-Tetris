@@ -63,7 +63,7 @@ def train_ppo():
     
     # Hyperparameters
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    total_timesteps = 10_000
+    total_timesteps = 100_000
     
     # Start with 1 env for now due to PufferLib configuration issues
     # PufferLib keeps creating 4096 envs regardless of config
@@ -76,7 +76,7 @@ def train_ppo():
     gamma = 0.99
     gae_lambda = 0.95
     clip_coef = 0.2
-    ent_coef = 0.01
+    ent_coef = 0.1
     vf_coef = 0.5
     max_grad_norm = 0.5
     
@@ -84,16 +84,6 @@ def train_ppo():
     batch_size = num_envs * num_steps
     minibatch_size = batch_size // num_minibatches
     num_updates = total_timesteps // batch_size
-    
-    print(f"🎮 CleanRL PPO Training for Tetris")
-    print(f"{'='*60}")
-    print(f"Device: {device}")
-    print(f"Total timesteps: {total_timesteps:,}")
-    print(f"Num environments: {num_envs}")
-    print(f"Steps per rollout: {num_steps}")
-    print(f"Batch size: {batch_size}")
-    print(f"Num updates: {num_updates}")
-    print(f"{'='*60}\n")
     
     # Create environment
     env_name = "puffer_tetris"
@@ -122,37 +112,26 @@ def train_ppo():
     print(f"  Observation space: {vecenv.single_observation_space}")
     print(f"  Num envs: {vecenv.num_envs}\n")
     
-    # Initialize environment first to get actual observation shape
     global_step = 0
     start_time = time.time()
     next_obs, _ = vecenv.reset()
     next_obs = torch.Tensor(next_obs).to(device)
     
-    # PufferLib may create more environments than requested - use actual count
     actual_num_envs = vecenv.num_envs
-    print(f"Requested {num_envs} envs, PufferLib created: {actual_num_envs}")
-    print(f"Observation shape: {next_obs.shape}")
     
-    # Adjust if needed
     if actual_num_envs != num_envs:
-        print(f"⚠️  Adjusting parameters for {actual_num_envs} environments...")
         num_envs = actual_num_envs
         batch_size = num_envs * num_steps
         minibatch_size = batch_size // num_minibatches
         num_updates = total_timesteps // batch_size
-        print(f"New batch_size: {batch_size}, num_updates: {num_updates}\n")
     
     next_done = torch.zeros(num_envs).to(device)
     
-    # Get actual observation shape from reset
-    actual_obs_shape = next_obs.shape[1:]  # Skip batch dimension
-    print(f"Actual observation shape per env: {actual_obs_shape}")
+    actual_obs_shape = next_obs.shape[1:]
     
-    # Create agent with actual observation space
     agent = PPOAgent(vecenv.single_observation_space, vecenv.single_action_space).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=learning_rate, eps=1e-5)
     
-    # Storage for rollouts (use actual observation shape)
     obs_storage = torch.zeros((num_steps, num_envs) + actual_obs_shape).to(device)
     actions_storage = torch.zeros((num_steps, num_envs)).to(device)
     logprobs_storage = torch.zeros((num_steps, num_envs)).to(device)
@@ -160,41 +139,33 @@ def train_ppo():
     dones_storage = torch.zeros((num_steps, num_envs)).to(device)
     values_storage = torch.zeros((num_steps, num_envs)).to(device)
     
-    # Episode tracking
     episode_rewards = []
     episode_lengths = []
     
-    print("Starting training...\n")
-    
     for update in range(1, num_updates + 1):
-        # Collect rollout
         for step in range(num_steps):
             global_step += num_envs
             obs_storage[step] = next_obs
             dones_storage[step] = next_done
             
-            # Get action from policy
             with torch.no_grad():
                 action, logprob, _, value = agent.get_action_and_value(next_obs)
                 values_storage[step] = value.flatten()
             actions_storage[step] = action
             logprobs_storage[step] = logprob
             
-            # Step environment
             next_obs, reward, terminated, truncated, info = vecenv.step(action.cpu().numpy())
             done = np.logical_or(terminated, truncated)
             rewards_storage[step] = torch.tensor(reward).to(device).view(-1)
             next_obs = torch.Tensor(next_obs).to(device)
             next_done = torch.Tensor(done).to(device)
             
-            # Track episodes
             if "episode" in info:
                 for item in info["episode"]:
                     if item is not None:
                         episode_rewards.append(item["r"])
                         episode_lengths.append(item["l"])
         
-        # Bootstrap value if not done
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
             advantages = torch.zeros_like(rewards_storage).to(device)
@@ -241,19 +212,15 @@ def train_ppo():
                 mb_advantages = b_advantages[mb_inds]
                 mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
                 
-                # Policy loss
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
                 
-                # Value loss
                 newvalue = newvalue.view(-1)
                 v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
                 
-                # Entropy loss
                 entropy_loss = entropy.mean()
                 
-                # Total loss
                 loss = pg_loss - ent_coef * entropy_loss + v_loss * vf_coef
                 
                 optimizer.zero_grad()
@@ -261,7 +228,6 @@ def train_ppo():
                 nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
                 optimizer.step()
         
-        # Logging
         if update % 10 == 0:
             elapsed = time.time() - start_time
             sps = int(global_step / elapsed)
