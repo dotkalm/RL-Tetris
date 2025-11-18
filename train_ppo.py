@@ -63,7 +63,7 @@ def train_ppo():
     
     # Hyperparameters
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    total_timesteps = 500_000
+    total_timesteps = 100_000
     
     # Start with 1 env for now due to PufferLib configuration issues
     # PufferLib keeps creating 4096 envs regardless of config
@@ -76,7 +76,7 @@ def train_ppo():
     gamma = 0.99
     gae_lambda = 0.95
     clip_coef = 0.2
-    ent_coef = 0.03
+    ent_coef = 0.02
     vf_coef = 0.5
     max_grad_norm = 0.5
     
@@ -138,9 +138,13 @@ def train_ppo():
     rewards_storage = torch.zeros((num_steps, num_envs)).to(device)
     dones_storage = torch.zeros((num_steps, num_envs)).to(device)
     values_storage = torch.zeros((num_steps, num_envs)).to(device)
-    
+
     episode_rewards = []
     episode_lengths = []
+
+    # Track action usage for rotation bonus
+    action_counts = torch.zeros(7).to(device)  # 7 actions
+    rotation_bonus_coef = 0.02  # Bonus coefficient for using rotation
     
     for update in range(1, num_updates + 1):
         for step in range(num_steps):
@@ -153,10 +157,21 @@ def train_ppo():
                 values_storage[step] = value.flatten()
             actions_storage[step] = action
             logprobs_storage[step] = logprob
-            
+
+            # Track action usage
+            for a in action.cpu().numpy():
+                action_counts[int(a)] += 1
+
             next_obs, reward, terminated, truncated, info = vecenv.step(action.cpu().numpy())
             done = np.logical_or(terminated, truncated)
-            rewards_storage[step] = torch.tensor(reward).to(device).view(-1)
+
+            # Add rotation bonus: if action is ROTATE (3), give small bonus
+            reward_tensor = torch.tensor(reward).to(device).view(-1)
+            for i, a in enumerate(action):
+                if a == 3:  # ACTION_ROTATE
+                    reward_tensor[i] += rotation_bonus_coef
+
+            rewards_storage[step] = reward_tensor
             next_obs = torch.Tensor(next_obs).to(device)
             next_done = torch.Tensor(done).to(device)
             
@@ -231,18 +246,26 @@ def train_ppo():
         if update % 10 == 0:
             elapsed = time.time() - start_time
             sps = int(global_step / elapsed)
-            
+
+            # Calculate action distribution
+            action_dist = action_counts / action_counts.sum()
+            rotation_pct = action_dist[3].item() * 100  # ACTION_ROTATE = 3
+
             print(f"Update {update}/{num_updates}")
             print(f"  Global step: {global_step:,}")
             print(f"  SPS: {sps}")
             print(f"  Policy loss: {pg_loss.item():.4f}")
             print(f"  Value loss: {v_loss.item():.4f}")
             print(f"  Entropy: {entropy_loss.item():.4f}")
-            
+            print(f"  Rotation usage: {rotation_pct:.1f}%")
+
             if len(episode_rewards) > 0:
                 print(f"  Episode reward (mean): {np.mean(episode_rewards[-100:]):.2f}")
                 print(f"  Episode length (mean): {np.mean(episode_lengths[-100:]):.1f}")
             print()
+
+            # Reset action counts for next period
+            action_counts.zero_()
     
     # Save model
     os.makedirs("../models/cleanrl", exist_ok=True)

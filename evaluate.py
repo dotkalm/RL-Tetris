@@ -3,24 +3,57 @@ Evaluate trained CleanRL PPO agent on Tetris
 """
 import torch
 import numpy as np
+import time
 from train_ppo import PPOAgent
 from pufferlib import pufferl
+from pufferlib.ocean.tetris import tetris
 
 
-def evaluate(model_path, n_episodes=10, render=False):
+def evaluate(model_path, n_episodes=10, render=False, delay=0.05):
     """Evaluate trained agent"""
-    
+
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    
-    # Create environment
-    env_name = "puffer_tetris"
-    config = pufferl.load_config(env_name)
-    config["vec"]["num_envs"] = 1
-    
+
+    # Create environment - use direct env when rendering for proper visualization
     if render:
-        config["render_mode"] = "human"
-    
-    vecenv = pufferl.load_env(env_name, config)
+        # Use single environment with render mode
+        from gymnasium import spaces
+        env = tetris.Tetris(render_mode='human')
+
+        # Wrap in a simple object to match vecenv interface
+        class SingleEnvWrapper:
+            def __init__(self, env):
+                self.env = env
+                self.single_observation_space = env.observation_space
+                # Convert MultiDiscrete([7]) to Discrete(7) to match trained agent
+                if isinstance(env.action_space, spaces.MultiDiscrete):
+                    self.single_action_space = spaces.Discrete(env.action_space.nvec[0])
+                else:
+                    self.single_action_space = env.action_space
+
+            def reset(self):
+                obs, info = self.env.reset()
+                return np.array([obs]), [info]
+
+            def step(self, actions):
+                # Convert scalar action to array for MultiDiscrete space
+                action = np.array([actions[0]]) if isinstance(self.env.action_space, spaces.MultiDiscrete) else actions[0]
+                obs, reward, terminated, truncated, info = self.env.step(action)
+                return np.array([obs]), np.array([reward]), np.array([terminated]), np.array([truncated]), [info]
+
+            def render(self):
+                return self.env.render()
+
+            def close(self):
+                self.env.close()
+
+        vecenv = SingleEnvWrapper(env)
+    else:
+        # Use vectorized environment for faster evaluation
+        env_name = "puffer_tetris"
+        config = pufferl.load_config(env_name)
+        config["vec"]["num_envs"] = 1
+        vecenv = pufferl.load_env(env_name, config)
     
     # Load agent
     agent = PPOAgent(vecenv.single_observation_space, vecenv.single_action_space).to(device)
@@ -60,10 +93,15 @@ def evaluate(model_path, n_episodes=10, render=False):
         obs, reward, terminated, truncated, info = vecenv.step(action.cpu().numpy())
         obs = torch.Tensor(obs).to(device)
 
+        # Render and add delay when rendering to make it visible
+        if render:
+            vecenv.render()
+            time.sleep(delay)
+
         # Extract scalar values from arrays
-        reward_scalar = reward[0] if isinstance(reward, np.ndarray) else reward
-        terminated_scalar = terminated[0] if isinstance(terminated, np.ndarray) else terminated
-        truncated_scalar = truncated[0] if isinstance(truncated, np.ndarray) else truncated
+        reward_scalar = float(reward[0]) if isinstance(reward, np.ndarray) else float(reward)
+        terminated_scalar = bool(terminated[0]) if isinstance(terminated, np.ndarray) else bool(terminated)
+        truncated_scalar = bool(truncated[0]) if isinstance(truncated, np.ndarray) else bool(truncated)
 
         current_episode_reward += reward_scalar
         current_episode_length += 1
@@ -99,16 +137,19 @@ def evaluate(model_path, n_episodes=10, render=False):
 
 if __name__ == "__main__":
     import sys
-    
+    import argparse
+
+    # Create parser that won't interfere with pufferlib's argument parsing
+    parser = argparse.ArgumentParser(description='Evaluate Tetris agent', add_help=False)
+    parser.add_argument('--render-mode', type=str, default=None, help='Render mode (human or None)')
+    parser.add_argument('--episodes', type=int, default=40, help='Number of episodes')
+    parser.add_argument('--delay', type=float, default=0.05, help='Delay between steps when rendering')
+
+    args, unknown = parser.parse_known_args()
+
     model_path = "../models/cleanrl/tetris_ppo.pt"
-    
-    # Check for render flag and number of episodes
-    render = "--render" in sys.argv
-    n_episodes = 40  # Increased for better statistics
-    
-    # Allow custom episode count via command line
-    for arg in sys.argv:
-        if arg.startswith("--episodes="):
-            n_episodes = int(arg.split("=")[1])
-    
-    evaluate(model_path, n_episodes=n_episodes, render=render)
+    render = args.render_mode == "human"
+    n_episodes = args.episodes
+    delay = args.delay
+
+    evaluate(model_path, n_episodes=n_episodes, render=render, delay=delay)

@@ -19,7 +19,7 @@ def get_config():
     
     # Core configuration
     config["train"]["device"] = "mps"
-    config["train"]["total_timesteps"] = 1_000_000
+    config["train"]["total_timesteps"] = 10_000
     config["train"]["use_rnn"] = False
     config["train"]["learning_rate"] = 1e-4
     config["train"]["checkpoint_interval"] = 100
@@ -34,11 +34,19 @@ def get_config():
     config["train"]["update_epochs"] = 4
 
     # PPO hyperparameters
-    config["train"]["ent_coef"] = 0.01
+    # Increased entropy coefficient from 0.01 to 0.05 to encourage exploration
+    # This helps the agent discover rotation actions which don't give immediate rewards
+    config["train"]["ent_coef"] = 0.05  # Higher entropy = more exploration of all actions
+
+    # Entropy annealing: gradually decrease entropy over training for curriculum learning
+    # Start high to explore rotation, then decrease to exploit learned strategy
+    config["train"]["anneal_entropy"] = True
+    config["train"]["ent_coef_final"] = 0.01  # End value
+
     config["train"]["vf_coef"] = 0.5
     config["train"]["max_grad_norm"] = 0.5
     config["train"]["clip_coef"] = 0.2
     config["train"]["gamma"] = 0.99
     config["train"]["gae_lambda"] = 0.95
-    
+
     return env_name, config
