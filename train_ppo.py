@@ -76,7 +76,7 @@ def train_ppo():
     gamma = 0.99
     gae_lambda = 0.95
     clip_coef = 0.2
-    ent_coef = 0.07
+    ent_coef = 0.03
     vf_coef = 0.5
     max_grad_norm = 0.5
     
