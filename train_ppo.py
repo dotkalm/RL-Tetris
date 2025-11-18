@@ -63,7 +63,7 @@ def train_ppo():
     
     # Hyperparameters
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    total_timesteps = 100_000
+    total_timesteps = 500_000
     
     # Start with 1 env for now due to PufferLib configuration issues
     # PufferLib keeps creating 4096 envs regardless of config
