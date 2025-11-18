@@ -44,8 +44,9 @@ def evaluate(model_path, n_episodes=10, render=False):
         episode_reward = 0
         episode_length = 0
         done = False
+        max_steps = 10000  # Prevent infinite episodes
         
-        while not done:
+        while not done and episode_length < max_steps:
             with torch.no_grad():
                 action, _, _, _ = agent.get_action_and_value(obs)
             
@@ -62,7 +63,8 @@ def evaluate(model_path, n_episodes=10, render=False):
         episode_rewards.append(episode_reward)
         episode_lengths.append(episode_length)
         
-        print(f"Episode {episode + 1}/{n_episodes} - Length: {episode_length}, Reward: {episode_reward:.2f}")
+        timeout_msg = " (TIMEOUT)" if episode_length >= max_steps else ""
+        print(f"Episode {episode + 1}/{n_episodes} - Length: {episode_length}, Reward: {episode_reward:.2f}{timeout_msg}")
     
     print(f"\n{'='*60}")
     print(f"EVALUATION RESULTS")
@@ -81,7 +83,13 @@ if __name__ == "__main__":
     
     model_path = "../models/cleanrl/tetris_ppo.pt"
     
-    # Check for render flag
+    # Check for render flag and number of episodes
     render = "--render" in sys.argv
+    n_episodes = 100  # Increased for better statistics
     
-    evaluate(model_path, n_episodes=10, render=render)
+    # Allow custom episode count via command line
+    for arg in sys.argv:
+        if arg.startswith("--episodes="):
+            n_episodes = int(arg.split("=")[1])
+    
+    evaluate(model_path, n_episodes=n_episodes, render=render)
