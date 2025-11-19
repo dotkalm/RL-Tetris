@@ -68,7 +68,7 @@ def train_ppo():
     # Start with 1 env for now due to PufferLib configuration issues
     # PufferLib keeps creating 4096 envs regardless of config
     num_envs = 1
-    num_steps = 2048  # Larger rollouts to compensate for single env
+    num_steps = 4096  # Larger rollouts to compensate for single env
     num_minibatches = 4
     update_epochs = 4
     

@@ -295,3 +295,184 @@ After training:
 - **`config.py`**: Legacy hyperparameters (not actively used)
 - **`models/cleanrl/tetris_ppo.pt`**: Saved neural network weights (657KB)
 - **`basic.py`**: Simple Tetris environment test (renders game with random actions)
+
+Deep Dive Explanations
+GAE (Generalized Advantage Estimation)
+Problem it solves: How do we know if an action was actually good or just got lucky?
+
+The Challenge:
+
+If you win Tetris after 1000 moves, which of those 1000 actions were actually good decisions?
+Should we credit all 1000 equally? Only the last few? Something in between?
+How GAE works:
+Imagine you're at step 100 in a Tetris game. GAE asks: "Was taking that action better than what I normally expect from this position?"
+
+It calculates this by looking forward in time multiple steps:
+
+1-step ahead: Did I get immediate reward better than expected?
+2-steps ahead: What about the reward after that?
+3-steps ahead: And the one after that?
+... up to end of episode
+Then it exponentially weights these: nearby steps matter more (λ=0.95 means each step ahead is worth 95% of the previous).
+
+Why it matters: Without GAE, the agent gets confused about which actions led to success. With GAE, it learns faster because credit is assigned more accurately.
+
+MSE (Mean Squared Error)
+What it is: A way to measure "how wrong" your predictions are.
+
+The Math: (prediction - actual)²
+
+Why square it?
+
+Makes all errors positive (otherwise -5 and +5 would cancel out)
+Punishes big errors MORE than small errors (error of 10 is 100x worse than error of 1)
+Makes the math work nicely with calculus (smooth derivatives)
+In your code: The critic network predicts "I think this Tetris position is worth 5.2 reward". After playing, you actually got 6.6 reward. MSE = (5.2 - 6.6)² = 1.96. The network learns to predict better next time.
+
+Why "Mean"?: You average the squared errors across your entire minibatch (~524k predictions), so one bad prediction doesn't dominate.
+
+Backpropagation
+The Core Idea: Teaching the neural network by working backwards through its layers.
+
+The Metaphor: Imagine a factory assembly line that produces wrong products. Backpropagation is like investigating which station screwed up by going backwards from the final product.
+
+How it works:
+
+Forward Pass: Input (234 dims) → Hidden (256) → Output (7 action probs + 1 value)
+Calculate Loss: "The output was wrong by THIS much"
+Backward Pass: Starting from the output, calculate:
+How much did the last layer contribute to the error?
+How much did the second-to-last layer contribute?
+Keep going backward to the first layer
+Update Weights: Adjust each layer's weights proportional to how much they contributed to the error
+The Math: Uses calculus (chain rule) to compute gradients - the "slope" showing which direction to adjust each of the 60,000+ neural network parameters.
+
+Why it's powerful: You don't have to manually figure out what each neuron should do. The algorithm automatically discovers which patterns in the Tetris grid predict good moves.
+
+Adam Optimizer
+What it does: Decides how much to adjust neural network weights during training.
+
+The Problem with Simple Gradient Descent:
+
+Learning rate too high: Network jumps around wildly, never converges
+Learning rate too low: Training takes forever
+Same learning rate for all parameters: Some need big updates, some need tiny tweaks
+Adam's Solution (Adaptive Moment Estimation):
+
+Momentum: Remembers which direction updates have been going recently. Like a ball rolling downhill - builds up speed in consistent directions.
+
+Adaptive Learning Rates: Each of the 60,000+ parameters gets its own learning rate that adjusts automatically:
+
+Parameters that change a lot → smaller learning rate (careful!)
+Parameters that barely change → larger learning rate (move faster!)
+Bias Correction: Accounts for the fact that at the start of training, the momentum estimates are unreliable.
+
+Why it's popular: "Set it and forget it" - works well on most problems without hand-tuning. Your learning_rate=2.5e-4 is just a starting point; Adam adjusts from there.
+
+Hyperparameters:
+
+lr = 2.5e-4: Base learning rate (0.00025 - small steps)
+beta1 = 0.9: How much to trust momentum (default)
+beta2 = 0.999: How much to trust variance estimates (default)
+eps = 1e-5: Numerical stability (prevents division by zero)
+Buffer Filling & Update Cycles
+"One update contains ~15-40 episodes" - What does this mean?
+The Buffer:
+
+You have 1024 parallel Tetris games running simultaneously
+Each collects 2048 steps of experience
+Total: 1024 × 2048 = 2,097,152 transitions stored in memory buffers
+This is NOT about episodes:
+
+Episodes are independent of the buffer size
+An episode is one complete Tetris game (start → game over)
+Average episode: ~50-150 steps
+Buffer: 2,097,152 steps worth of data from all games combined
+Why ~15-40 episodes per update?
+
+1024 environments × average ~20-40 episode completions during the 2048 steps
+Some envs finish 0 episodes (game still ongoing)
+Some envs finish 3-4 episodes (died quickly, restarted multiple times)
+The buffer fills based on STEPS, not episodes
+Buffer lifecycle:
+
+Empty buffers at start of update
+Fill for 2048 steps (regardless of how many episodes finish)
+Process all data through PPO optimization
+Discard everything (on-policy learning - old data is stale)
+Repeat with fresh buffer
+loss.backward()
+What it does: Triggers backpropagation through the entire neural network.
+
+The Sequence:
+
+What's happening inside .backward():
+
+Computation Graph: PyTorch remembered every operation that led to the loss
+
+"Loss came from policy_loss + value_loss"
+"Policy_loss came from action probabilities"
+"Action probabilities came from actor layer"
+"Actor layer came from hidden layer"
+"Hidden layer came from input"
+Chain Rule: Working backwards, compute:
+
+∂loss/∂(actor_weights) = how much does changing actor weights change loss?
+∂loss/∂(hidden_weights) = how much does changing hidden weights change loss?
+Do this for ALL 60,000+ parameters
+Gradient Storage: Each parameter's .grad attribute now contains its gradient
+
+Why separate .backward() from .step()?
+
+.backward(): Calculate what to change (gradients)
+.step(): Actually change it (update weights)
+Separation allows gradient clipping, gradient accumulation, etc.
+Hyperparameters Explained
+What they are: Knobs you tune BEFORE training that control how learning happens. Unlike weights (learned during training), hyperparameters are set by you.
+
+Categories:
+1. Learning Rate Parameters
+
+learning_rate = 2.5e-4: How big of steps to take when updating weights
+Too high: Network becomes unstable, forgets what it learned
+Too low: Training takes forever, might get stuck
+2.5e-4 is standard for PPO
+2. Discount Factor (γ = 0.99)
+
+How much to value future rewards vs. immediate rewards
+0.99 = "Reward 100 steps from now is worth 0.99^100 ≈ 37% of immediate reward"
+Tetris needs high gamma because game is long-term strategic
+3. GAE Lambda (λ = 0.95)
+
+Bias-variance tradeoff in advantage estimation
+High (0.95-0.99): Trust long-term outcomes (higher variance but less bias)
+Low (0.8-0.9): Trust short-term signals (lower variance but more bias)
+4. PPO Clip Coefficient (ε = 0.2)
+
+Maximum allowed policy change per update
+Ratio can only be between 0.8 and 1.2 (±20%)
+Prevents catastrophic forgetting - agent can't suddenly become terrible
+5. Entropy Coefficient (0.03)
+
+How much to reward exploration
+High (0.1): "Try random stuff, even if it seems bad"
+Low (0.001): "Only do what you know works"
+0.03 is medium - balance exploration vs. exploitation
+6. Value Function Coefficient (0.5)
+
+How much to weight critic loss vs. policy loss
+1.0 = equal importance
+0.5 = policy matters 2x more than value prediction
+7. Batch Architecture
+
+num_steps = 2048: Rollout length (how much data before updating)
+num_minibatches = 4: Split data into chunks (memory efficiency)
+update_epochs = 4: Reuse each batch 4 times (sample efficiency)
+Why so many? Each controls a different aspect:
+
+Network architecture (hidden size)
+Optimization (learning rate, Adam betas)
+RL algorithm (gamma, lambda, clip)
+Training stability (gradient clipping, entropy)
+Computational efficiency (batch sizes, epochs)
+Tuning them: Art + science. Start with proven defaults (like CleanRL's), then adjust based on your specific problem. Your entropy is higher (0.03 vs typical 0.01) because Tetris needs more exploration to discover rotation strategies.
